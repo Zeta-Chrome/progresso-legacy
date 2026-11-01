@@ -231,7 +231,19 @@ function renderSkills(container = null, skillList = skills) {
 	if (!container) container = document.getElementById("skillsList");
 	container.innerHTML = "";
 	const sortedSkills = [...skillList].sort((a, b) => {
-		return calculateProgress(b) - calculateProgress(a);
+		const progA = calculateProgress(a);
+		const progB = calculateProgress(b);
+
+		const isDoneA = progA >= 100;
+		const isDoneB = progB >= 100;
+
+		// If one is 100% and the other isn't, sink the completed one
+		if (isDoneA !== isDoneB) {
+			return isDoneA ? 1 : -1;
+		}
+
+		// Otherwise, sort highest progress first
+		return progB - progA;
 	});
 	sortedSkills.forEach((skill) => renderSkill(skill, container));
 
