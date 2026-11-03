@@ -2,15 +2,24 @@ let currentTheme = "light";
 let skills = [];
 let hoursWorkedDict = {};
 let exerciseHoursDict = {};
-let currentDate = new Date();
+let currentDate = new Date(); // the month/date being VIEWED (calendar + chart)
 let selectedDate = null;
 let openPanelStack = [];
+
+// When true, logging goes to selectedDate. When false, logging always goes to the real "today".
+let dateIsPinned = false;
+let lastKnownDay = null;
 
 const Pages = ["progressPage", "calendarPage", "chartPage"];
 
 document.addEventListener("DOMContentLoaded", () => {
 	loadData();
 });
+
+// The date that hours / completions / plans should be logged against.
+function getLogDate() {
+	return dateIsPinned ? new Date(selectedDate) : new Date();
+}
 
 function loadData() {
 	window.electronAPI.loadData("ProgressoData").then((savedData) => {
@@ -29,7 +38,9 @@ function loadData() {
 			selectedDate = new Date();
 		}
 
+		dateIsPinned = false;
 		currentDate = new Date();
+		lastKnownDay = formatDate(new Date());
 		rolloverPlannedTasks();
 		saveData();
 		startMidnightRollover();
@@ -38,8 +49,11 @@ function loadData() {
 		showProgressPage();
 	}).catch(error => {
 		console.error("Error loading data:", error);
+		dateIsPinned = false;
 		currentDate = new Date();
 		selectedDate = new Date();
+		lastKnownDay = formatDate(new Date());
+		startMidnightRollover();
 		setCurrentTheme();
 		setupEventListeners();
 		showProgressPage();
@@ -63,23 +77,36 @@ function rolloverPlannedTasks() {
 	skills.forEach(skill => processSkill(skill));
 }
 
+// Detects that the real calendar day has changed and updates state accordingly.
+function checkDayChange() {
+	const todayStr = formatDate(new Date());
+	if (todayStr === lastKnownDay) return;
+
+	const previousDay = lastKnownDay;
+	lastKnownDay = todayStr;
+
+	if (!dateIsPinned) {
+		currentDate = new Date();
+		// If the user was looking at "yesterday", follow along to the new day
+		if (selectedDate && formatDate(selectedDate) === previousDay) {
+			selectedDate = new Date();
+		}
+	}
+
+	rolloverPlannedTasks();
+	saveData();
+	renderCalendar();
+	renderSkills();
+}
+
+// A single setTimeout can be missed if the machine sleeps, so poll and
+// also re-check whenever the window regains focus / becomes visible.
 function startMidnightRollover() {
-	const now = new Date();
-	const msUntilMidnight = new Date(
-		now.getFullYear(),
-		now.getMonth(),
-		now.getDate() + 1,
-		0, 0, 0, 0
-	) - now;
-
-	setTimeout(() => {
-		rolloverPlannedTasks();
-		saveData();
-		renderCalendar();
-		renderSkills();
-
-		startMidnightRollover();
-	}, msUntilMidnight);
+	setInterval(checkDayChange, 60 * 1000);
+	window.addEventListener("focus", checkDayChange);
+	document.addEventListener("visibilitychange", () => {
+		if (!document.hidden) checkDayChange();
+	});
 }
 
 function cleanSkillsData(skillsList) {
@@ -179,14 +206,17 @@ function setupMainSkillDragAndDrop() {
 function setCurrentDate() {
 	const setCurrentDateButton = document.getElementById("setCurrentDate");
 
-	if (setCurrentDateButton.classList.contains("button-set")) {
+	if (dateIsPinned) {
+		dateIsPinned = false;
 		setCurrentDateButton.classList.remove("button-set");
 		setCurrentDateButton.innerText = "Set";
 		currentDate = new Date();
 	} else {
+		dateIsPinned = true;
 		setCurrentDateButton.classList.add("button-set");
 		setCurrentDateButton.innerText = "Unset";
-		currentDate = selectedDate;
+		// Copy, so navigating months with << / >> never mutates selectedDate
+		currentDate = new Date(selectedDate);
 	}
 
 	renderCalendar();
@@ -458,7 +488,7 @@ function finishEditing(skill, input) {
 function updateSkillHours(skill, newValue) {
 	const newHours = parseFloat(newValue) || 0;
 	const hoursDiff = newHours - skill.hours;
-	const formattedDate = formatDate(currentDate);
+	const formattedDate = formatDate(getLogDate());
 
 	hoursWorkedDict[formattedDate] =
 		(hoursWorkedDict[formattedDate] || 0) + hoursDiff;
@@ -469,12 +499,14 @@ function updateSkillHours(skill, newValue) {
 
 function updateExerciseHours(exerciseHours, newValue) {
 	const newHours = parseFloat(newValue) || 0;
-	const formattedDate = formatDate(currentDate);
-	if (formatDate(selectedDate) == formattedDate) {
-		exerciseHoursDict[formattedDate] = newHours;
+	const logDateStr = formatDate(getLogDate());
+	if (formatDate(selectedDate) === logDateStr) {
+		exerciseHoursDict[logDateStr] = newHours;
 		renderCalendar();
 		saveData();
-	} else exerciseHours.value = exerciseHoursDict[formatDate(selectedDate)] || 0;
+	} else {
+		exerciseHours.value = exerciseHoursDict[formatDate(selectedDate)] || 0;
+	}
 }
 
 function deleteSkill(skill) {
@@ -578,11 +610,7 @@ function sortTasks(tasks) {
 
 function toggleTaskPlanned(task) {
 	task.planned = !task.planned;
-	if (task.planned) {
-		task.plannedDate = formatDate(currentDate);
-	} else {
-		task.plannedDate = null;
-	}
+	task.plannedDate = task.planned ? formatDate(getLogDate()) : null;
 	saveData();
 	renderCalendar();
 }
@@ -631,7 +659,7 @@ function renderTasks(tasksElement, skill) {
 		checkbox.addEventListener("change", (e) => {
 			const wasCompleted = task.completed;
 			task.completed = e.target.checked;
-			task.date = new Date();
+			task.date = getLogDate();
 
 			if (wasCompleted && !task.completed) {
 				skill.tasks = skill.tasks.filter((t) => t.id !== task.id);
@@ -793,7 +821,7 @@ function updateOverallProgress() {
 		0,
 	);
 	const progress = totalTasks === 0 ? 0 : (completedTasks / totalTasks) * 100;
-	overallProgress = document.querySelector("#overallProgress .progress-bar");
+	const overallProgress = document.querySelector("#overallProgress .progress-bar");
 	overallProgress.style.width = `${progress}%`;
 }
 
